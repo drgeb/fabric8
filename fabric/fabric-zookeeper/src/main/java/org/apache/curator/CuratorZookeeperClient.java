@@ -99,6 +99,7 @@ public class CuratorZookeeperClient implements Closeable
 
         this.connectionTimeoutMs = connectionTimeoutMs;
         state = new ConnectionState(zookeeperFactory, ensembleProvider, sessionTimeoutMs, connectionTimeoutMs, watcher, tracer, canBeReadOnly);
+        log.info("GG: creating CuratorZookeeperClient");
         setRetryPolicy(retryPolicy);
     }
 
@@ -158,7 +159,7 @@ public class CuratorZookeeperClient implements Closeable
     {
         Preconditions.checkState(started.get(), "Client is not started");
 
-        log.debug("blockUntilConnectedOrTimedOut() start");
+        log.info("GG: blockUntilConnectedOrTimedOut() start");
         TimeTrace       trace = startTracer("blockUntilConnectedOrTimedOut");
 
         internalBlockUntilConnectedOrTimedOut();
@@ -166,7 +167,7 @@ public class CuratorZookeeperClient implements Closeable
         trace.commit();
 
         boolean localIsConnected = state.isConnected();
-        log.debug("blockUntilConnectedOrTimedOut() end. isConnected: " + localIsConnected);
+        log.info("GG: blockUntilConnectedOrTimedOut() end. isConnected: " + localIsConnected);
 
         return localIsConnected;
     }
@@ -178,7 +179,7 @@ public class CuratorZookeeperClient implements Closeable
      */
     public void     start() throws Exception
     {
-        log.debug("Starting");
+        log.info("GG: Starting " + this);
 
         if ( !started.compareAndSet(false, true) )
         {
@@ -210,7 +211,7 @@ public class CuratorZookeeperClient implements Closeable
      */
     public void     close()
     {
-        log.debug("Closing");
+        log.info("GG: Closing " + this);
 
         started.set(false);
         try
@@ -247,6 +248,7 @@ public class CuratorZookeeperClient implements Closeable
                 }
             }
         };
+        log.info("GG: Setting retry policy to " + policy + " wrapped in " + newPolicy);
         retryPolicy.set(policy);
     }
 
@@ -334,6 +336,7 @@ public class CuratorZookeeperClient implements Closeable
 
     void internalBlockUntilConnectedOrTimedOut() throws InterruptedException
     {
+        log.info("GG: starting internalBlockUntilConnectedOrTimedOut()");
         long            waitTimeMs = connectionTimeoutMs;
         while ( !state.isConnected() && (waitTimeMs > 0) )
         {
@@ -345,7 +348,13 @@ public class CuratorZookeeperClient implements Closeable
                 @Override
                 public void process(WatchedEvent event)
                 {
+                    log.info("GG: process(" + event + ")");
                     latch.countDown();
+                }
+
+                @Override
+                public String toString() {
+                    return "Watcher for internalBlockUntilConnectedOrTimedOut: " + System.identityHashCode(this);
                 }
             };
 
