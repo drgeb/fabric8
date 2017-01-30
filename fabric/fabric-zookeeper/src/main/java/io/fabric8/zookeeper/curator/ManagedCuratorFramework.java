@@ -178,6 +178,7 @@ public final class ManagedCuratorFramework extends AbstractComponent implements 
             }
             if (newState == ConnectionState.LOST) {
                 try {
+                    closed.set(true);
                     run();
                 } catch (Exception e){
                     // this should never occurr
@@ -187,7 +188,7 @@ public final class ManagedCuratorFramework extends AbstractComponent implements 
 
         }
 
-        public void close() {
+        public void close(State next) {
             closed.set(true);
             CuratorFramework curator = this.curator;
             if (curator != null) {
@@ -202,6 +203,9 @@ public final class ManagedCuratorFramework extends AbstractComponent implements 
             try {
                 LOGGER.info("GG: submitting this " + this);
                 executor.submit(this).get();
+                if (next != null) {
+                    executor.submit(next);
+                }
             } catch (Exception e) {
                 LOGGER.warn("Error while closing curator", e);
             }
@@ -262,12 +266,13 @@ public final class ManagedCuratorFramework extends AbstractComponent implements 
             if (!config.equals(oldConfiguration)) {
                 State next = new State(config);
                 if (state.compareAndSet(prev, next)) {
-                    executor.submit(next);
                     if (prev != null) {
-                        prev.close();
+                        prev.close(next);
+                    } else {
+                        executor.submit(next);
                     }
                 } else {
-                    next.close();
+                    next.close(null);
                 }
             } else {
                 LOGGER.info("GG: config not different than oldConfiguration");
@@ -285,7 +290,7 @@ public final class ManagedCuratorFramework extends AbstractComponent implements 
         if (prev != null) {
             CuratorFrameworkLocator.unbindCurator(prev.curator);
             LOGGER.info("GG: closing prev " + prev);
-            prev.close();
+            prev.close(null);
         }
         executor.shutdown();
         executor.awaitTermination(30, TimeUnit.SECONDS);
