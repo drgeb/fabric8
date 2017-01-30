@@ -250,6 +250,7 @@ public class CuratorZookeeperClient implements Closeable
                 }
             }
         };
+        log.info("GG: Setting retry policy to " + policy + " wrapped in " + newPolicy);
         retryPolicy.set(policy);
     }
 
