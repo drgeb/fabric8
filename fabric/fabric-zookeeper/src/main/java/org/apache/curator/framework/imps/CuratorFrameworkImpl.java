@@ -108,6 +108,11 @@ public class CuratorFrameworkImpl implements CuratorFramework
                 CuratorEvent event = new CuratorEventImpl(CuratorFrameworkImpl.this, CuratorEventType.WATCHED, watchedEvent.getState().getIntValue(), unfixForNamespace(watchedEvent.getPath()), null, null, null, null, null, watchedEvent, null);
                 processEvent(event);
             }
+
+            @Override
+            public String toString() {
+                return "Watcher for CuratorFrameworkImpl";
+            }
         }, builder.getRetryPolicy(), builder.canBeReadOnly());
 
         listeners = new ListenerContainer<CuratorListener>();
@@ -254,6 +259,7 @@ public class CuratorFrameworkImpl implements CuratorFramework
                 }
             };
 
+            log.info("GG: adding listener to connectionStateListenable " + listener);
             this.getConnectionStateListenable().addListener(listener);
 
             client.start();
@@ -501,6 +507,7 @@ public class CuratorFrameworkImpl implements CuratorFramework
 
     <DATA_TYPE> void processBackgroundOperation(OperationAndData<DATA_TYPE> operationAndData, CuratorEvent event)
     {
+        log.info("GG: processBackgroundOperation(" + operationAndData + ", " + event + ")");
         boolean isInitialExecution = (event == null);
         if ( isInitialExecution )
         {
@@ -537,7 +544,11 @@ public class CuratorFrameworkImpl implements CuratorFramework
     {
         if ( getState() == CuratorFrameworkState.STARTED )
         {
+            log.info("GG offering background operation " + operationAndData);
             backgroundOperations.offer(operationAndData);
+        }
+        else {
+            log.info("GG NOT offering background operation " + operationAndData + " because state == " + getState());
         }
     }
 
@@ -692,12 +703,13 @@ public class CuratorFrameworkImpl implements CuratorFramework
                 }
                 else
                 {
-                    log.debug("suspendConnection() failure ignored as the ZooKeeper instance was reset. Retrying.");
+                    log.info("GG: suspendConnection() failure ignored as the ZooKeeper instance was reset. Retrying.");
                     // send -1 to signal that if it happens again, punt and mark the connection lost
                     doSyncForSuspendedConnection(-1);
                 }
             }
         };
+        log.info("GG: CFI.doSyncForSuspendedConnection(" + instanceIndex + ")");
         performBackgroundOperation(new OperationAndData<String>(operation, "/", null, errorCallback, null));
     }
 
@@ -771,6 +783,7 @@ public class CuratorFrameworkImpl implements CuratorFramework
                     {
                         log.debug("Retrying operation");
                     }
+                    log.info("GG retry allowed, offering background operation " + operationAndData);
                     backgroundOperations.offer(operationAndData);
                     break;
                 }
@@ -780,6 +793,7 @@ public class CuratorFrameworkImpl implements CuratorFramework
                     {
                         log.debug("Retry policy did not allow retry");
                     }
+                    log.info("GG retry NOT allowed, retries exhausted for operation " + operationAndData);
                     if ( operationAndData.getErrorCallback() != null )
                     {
                         operationAndData.getErrorCallback().retriesExhausted(operationAndData);
@@ -794,6 +808,7 @@ public class CuratorFrameworkImpl implements CuratorFramework
 
     private void backgroundOperationsLoop()
     {
+        log.info("GG: starting CuratorFrameworkLoop.backgroundOperationsLoop()");
         try
         {
             while ( state.get() == CuratorFrameworkState.STARTED )
@@ -828,6 +843,7 @@ public class CuratorFrameworkImpl implements CuratorFramework
         {
             if ( client.isConnected() )
             {
+                log.info("GG: client.isConnected() -> operationAndData.callPerformBackgroundOperation()");
                 operationAndData.callPerformBackgroundOperation();
             }
             else
@@ -838,6 +854,7 @@ public class CuratorFrameworkImpl implements CuratorFramework
                     throw new CuratorConnectionLossException();
                 }
                 operationAndData.sleepFor(1, TimeUnit.SECONDS);
+                log.info("GG: !client.isConnected() -> queueOperation(" + operationAndData + ")");
                 queueOperation(operationAndData);
             }
         }
@@ -852,6 +869,7 @@ public class CuratorFrameworkImpl implements CuratorFramework
              */
             if ( e instanceof CuratorConnectionLossException )
             {
+                log.info("GG: caught " + e + " checking background retry");
                 WatchedEvent watchedEvent = new WatchedEvent(Watcher.Event.EventType.None, Watcher.Event.KeeperState.Disconnected, null);
                 CuratorEvent event = new CuratorEventImpl(this, CuratorEventType.WATCHED, KeeperException.Code.CONNECTIONLOSS.intValue(), null, null, operationAndData.getContext(), null, null, null, watchedEvent, null);
                 if ( checkBackgroundRetry(operationAndData, event) )
@@ -865,6 +883,7 @@ public class CuratorFrameworkImpl implements CuratorFramework
             }
             else
             {
+                log.info("GG: caught " + e + " handling exception immediately");
                 handleBackgroundOperationException(operationAndData, e);
             }
         }
@@ -872,6 +891,7 @@ public class CuratorFrameworkImpl implements CuratorFramework
 
     private void processEvent(final CuratorEvent curatorEvent)
     {
+        log.info("GG: processEvent(" + curatorEvent + ")");
         if ( curatorEvent.getType() == CuratorEventType.WATCHED )
         {
             validateConnection(curatorEvent.getWatchedEvent().getState());
