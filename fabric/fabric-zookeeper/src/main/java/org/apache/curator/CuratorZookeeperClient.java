@@ -1,26 +1,31 @@
 /**
- *  Copyright 2005-2016 Red Hat, Inc.
+ * Licensed to the Apache Software Foundation (ASF) under one
+ * or more contributor license agreements.  See the NOTICE file
+ * distributed with this work for additional information
+ * regarding copyright ownership.  The ASF licenses this file
+ * to you under the Apache License, Version 2.0 (the
+ * "License"); you may not use this file except in compliance
+ * with the License.  You may obtain a copy of the License at
  *
- *  Red Hat licenses this file to you under the Apache License, version
- *  2.0 (the "License"); you may not use this file except in compliance
- *  with the License.  You may obtain a copy of the License at
+ *   http://www.apache.org/licenses/LICENSE-2.0
  *
- *     http://www.apache.org/licenses/LICENSE-2.0
- *
- *  Unless required by applicable law or agreed to in writing, software
- *  distributed under the License is distributed on an "AS IS" BASIS,
- *  WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or
- *  implied.  See the License for the specific language governing
- *  permissions and limitations under the License.
+ * Unless required by applicable law or agreed to in writing,
+ * software distributed under the License is distributed on an
+ * "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
+ * KIND, either express or implied.  See the License for the
+ * specific language governing permissions and limitations
+ * under the License.
  */
 package org.apache.curator;
 
 import com.google.common.base.Preconditions;
+import org.apache.curator.drivers.OperationTrace;
 import org.apache.curator.drivers.TracerDriver;
 import org.apache.curator.ensemble.EnsembleProvider;
 import org.apache.curator.ensemble.fixed.FixedEnsembleProvider;
 import org.apache.curator.utils.DefaultTracerDriver;
 import org.apache.curator.utils.DefaultZookeeperFactory;
+import org.apache.curator.utils.ThreadUtils;
 import org.apache.curator.utils.ZookeeperFactory;
 import org.apache.zookeeper.WatchedEvent;
 import org.apache.zookeeper.Watcher;
@@ -29,8 +34,6 @@ import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import java.io.Closeable;
 import java.io.IOException;
-import java.util.Queue;
-import java.util.concurrent.ConcurrentLinkedQueue;
 import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicBoolean;
@@ -48,7 +51,6 @@ public class CuratorZookeeperClient implements Closeable
     private final int                               connectionTimeoutMs;
     private final AtomicBoolean                     started = new AtomicBoolean(false);
     private final AtomicReference<TracerDriver>     tracer = new AtomicReference<TracerDriver>(new DefaultTracerDriver());
-    private final Queue<Thread>                     retryingThreads = new ConcurrentLinkedQueue<Thread>();
 
     /**
      *
@@ -99,7 +101,6 @@ public class CuratorZookeeperClient implements Closeable
 
         this.connectionTimeoutMs = connectionTimeoutMs;
         state = new ConnectionState(zookeeperFactory, ensembleProvider, sessionTimeoutMs, connectionTimeoutMs, watcher, tracer, canBeReadOnly);
-        log.info("GG: creating CuratorZookeeperClient");
         setRetryPolicy(retryPolicy);
     }
 
@@ -159,15 +160,15 @@ public class CuratorZookeeperClient implements Closeable
     {
         Preconditions.checkState(started.get(), "Client is not started");
 
-        log.info("GG: blockUntilConnectedOrTimedOut() start");
-        TimeTrace       trace = startTracer("blockUntilConnectedOrTimedOut");
+        log.debug("blockUntilConnectedOrTimedOut() start");
+        OperationTrace       trace = startAdvancedTracer("blockUntilConnectedOrTimedOut");
 
         internalBlockUntilConnectedOrTimedOut();
 
         trace.commit();
 
         boolean localIsConnected = state.isConnected();
-        log.info("GG: blockUntilConnectedOrTimedOut() end. isConnected: " + localIsConnected);
+        log.debug("blockUntilConnectedOrTimedOut() end. isConnected: " + localIsConnected);
 
         return localIsConnected;
     }
@@ -179,31 +180,15 @@ public class CuratorZookeeperClient implements Closeable
      */
     public void     start() throws Exception
     {
-        log.info("GG: Starting " + this);
+        log.debug("Starting");
 
         if ( !started.compareAndSet(false, true) )
         {
-            IllegalStateException error = new IllegalStateException();
-            log.error("Already started", error);
-            throw error;
+            IllegalStateException ise = new IllegalStateException("Already started");
+            throw ise;
         }
 
         state.start();
-    }
-
-
-    /**
-     * Flag the client as being stopped.
-     * No new connections will be attempted.
-     */
-    public void     stop()
-    {
-        log.debug("Stopping");
-
-        started.set(false);
-        for (Thread thread : retryingThreads) {
-            thread.interrupt();
-        }
     }
 
     /**
@@ -211,7 +196,7 @@ public class CuratorZookeeperClient implements Closeable
      */
     public void     close()
     {
-        log.info("GG: Closing " + this);
+        log.debug("Closing");
 
         started.set(false);
         try
@@ -220,6 +205,7 @@ public class CuratorZookeeperClient implements Closeable
         }
         catch ( IOException e )
         {
+            ThreadUtils.checkInterrupted(e);
             log.error("", e);
         }
     }
@@ -229,26 +215,10 @@ public class CuratorZookeeperClient implements Closeable
      *
      * @param policy new policy
      */
-    public void     setRetryPolicy(final RetryPolicy policy)
+    public void     setRetryPolicy(RetryPolicy policy)
     {
         Preconditions.checkNotNull(policy, "policy cannot be null");
 
-        RetryPolicy newPolicy = new RetryPolicy() {
-            @Override
-            public boolean allowRetry(int retryCount, long elapsedTimeMs, RetrySleeper sleeper) {
-                if (!started.get()) {
-                    return false;
-                }
-                Thread thread = Thread.currentThread();
-                try {
-                    retryingThreads.add(thread);
-                    return policy.allowRetry(retryCount, elapsedTimeMs, sleeper);
-                } finally {
-                    retryingThreads.remove(thread);
-                }
-            }
-        };
-        log.info("GG: Setting retry policy to " + policy + " wrapped in " + newPolicy);
         retryPolicy.set(policy);
     }
 
@@ -270,6 +240,16 @@ public class CuratorZookeeperClient implements Closeable
     public TimeTrace          startTracer(String name)
     {
         return new TimeTrace(name, tracer.get());
+    }
+
+    /**
+     * Start a new advanced tracer with more metrics being recorded
+     * @param name name of the event
+     * @return the new tracer ({@link OperationTrace#commit()} must be called)
+     */
+    public OperationTrace          startAdvancedTracer(String name)
+    {
+        return new OperationTrace(name, tracer.get(), state.getSessionId());
     }
 
     /**
@@ -336,25 +316,16 @@ public class CuratorZookeeperClient implements Closeable
 
     void internalBlockUntilConnectedOrTimedOut() throws InterruptedException
     {
-        log.info("GG: starting internalBlockUntilConnectedOrTimedOut()");
         long            waitTimeMs = connectionTimeoutMs;
         while ( !state.isConnected() && (waitTimeMs > 0) )
         {
-            Preconditions.checkState(started.get(), "Client has been stopped");
-
             final CountDownLatch            latch = new CountDownLatch(1);
             Watcher tempWatcher = new Watcher()
             {
                 @Override
                 public void process(WatchedEvent event)
                 {
-                    log.info("GG: process(" + event + ")");
                     latch.countDown();
-                }
-
-                @Override
-                public String toString() {
-                    return "Watcher for internalBlockUntilConnectedOrTimedOut: " + System.identityHashCode(this);
                 }
             };
 
