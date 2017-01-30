@@ -275,7 +275,7 @@ public final class GitDataStoreImpl extends AbstractComponent implements GitData
             threadPool.scheduleWithFixedDelay(new Runnable() {
                 @Override
                 public void run() {
-                    LockHandle writeLock = aquireWriteLock();
+                    LockHandle writeLock = aquireWriteLock("pull from remote");
                     try {
                         LOGGER.trace("Performing timed pull");
                         doPullInternal();
@@ -334,7 +334,7 @@ public final class GitDataStoreImpl extends AbstractComponent implements GitData
         }
 
         if (gitGcOnLoad) {
-            LockHandle writeLock = aquireWriteLock();
+            LockHandle writeLock = aquireWriteLock("gc on load");
             try {
                 GitOperation<Void> gitop = new GitOperation<Void>() {
                     public Void call(Git git, GitContext context) throws Exception {
@@ -416,7 +416,7 @@ public final class GitDataStoreImpl extends AbstractComponent implements GitData
     }
 
     @Override
-    public LockHandle aquireWriteLock() {
+    public LockHandle aquireWriteLock(final String reason) {
         final WriteLock writeLock = readWriteLock.writeLock();
         boolean success;
         try {
@@ -535,7 +535,7 @@ public final class GitDataStoreImpl extends AbstractComponent implements GitData
             LOGGER.warn("Waiting for initial versions failed");
         }
 
-        LockHandle writeLock = aquireWriteLock();
+        LockHandle writeLock = aquireWriteLock("getVersionFromCacheRW: version=" + versionId + ", profile=" + profileId);
         try {
             assertValid();
             String branch = GitHelpers.getProfileBranch(versionId, profileId);
@@ -565,7 +565,7 @@ public final class GitDataStoreImpl extends AbstractComponent implements GitData
     public String createVersion(GitContext context, final String sourceId, final String targetId, final Map<String, String> attributes) {
         IllegalStateAssertion.assertNotNull(sourceId, "sourceId");
         IllegalStateAssertion.assertNotNull(targetId, "targetId");
-        LockHandle writeLock = aquireWriteLock();
+        LockHandle writeLock = aquireWriteLock("create version " + targetId + " from source: " + sourceId);
         try {
             assertValid();
             LOGGER.debug("Create version: {} => {}", sourceId, targetId);
@@ -595,7 +595,7 @@ public final class GitDataStoreImpl extends AbstractComponent implements GitData
     @Override
     public String createVersion(GitContext context, final Version version) {
         IllegalStateAssertion.assertNotNull(version, "version");
-        LockHandle writeLock = aquireWriteLock();
+        LockHandle writeLock = aquireWriteLock("create version " + version.getId());
         try {
             assertValid();
             LOGGER.debug("Create version: {}", version);
@@ -691,7 +691,7 @@ public final class GitDataStoreImpl extends AbstractComponent implements GitData
     @Override
     public void deleteVersion(GitContext context, final String versionId) {
         IllegalStateAssertion.assertNotNull(versionId, "versionId");
-        LockHandle writeLock = aquireWriteLock();
+        LockHandle writeLock = aquireWriteLock("delete version " + versionId);
         try {
             assertValid();
             LOGGER.debug("Delete version: " + versionId);
@@ -720,7 +720,7 @@ public final class GitDataStoreImpl extends AbstractComponent implements GitData
     @Override
     public String createProfile(GitContext context, final Profile profile) {
         IllegalStateAssertion.assertNotNull(profile, "profile");
-        LockHandle writeLock = aquireWriteLock();
+        LockHandle writeLock = aquireWriteLock("create profile " + profile.getId());
         try {
             assertValid();
             GitOperation<String> gitop = new GitOperation<String>() {
@@ -752,7 +752,7 @@ public final class GitDataStoreImpl extends AbstractComponent implements GitData
     @Override
     public String updateProfile(GitContext context, final Profile profile, boolean force) {
         IllegalStateAssertion.assertNotNull(profile, "profile");
-        LockHandle writeLock = aquireWriteLock();
+        LockHandle writeLock = aquireWriteLock("update profile " + profile.getId());
         try {
             assertValid();
 
@@ -820,7 +820,7 @@ public final class GitDataStoreImpl extends AbstractComponent implements GitData
     public void deleteProfile(GitContext context, final String versionId, final String profileId) {
         IllegalStateAssertion.assertNotNull(versionId, "versionId");
         IllegalStateAssertion.assertNotNull(profileId, "profileId");
-        LockHandle writeLock = aquireWriteLock();
+        LockHandle writeLock = aquireWriteLock("delete profile " + profileId + " from version " + versionId);
         try {
             assertValid();
             LOGGER.debug("Delete " + ProfileBuilder.Factory.create(versionId, profileId).getProfile());
@@ -968,7 +968,7 @@ public final class GitDataStoreImpl extends AbstractComponent implements GitData
     public void importProfiles(final String versionId, final List<String> profileZipUrls) {
         IllegalStateAssertion.assertNotNull(versionId, "versionId");
         IllegalStateAssertion.assertNotNull(profileZipUrls, "profileZipUrls");
-        LockHandle writeLock = aquireWriteLock();
+        LockHandle writeLock = aquireWriteLock("import profiles from " + profileZipUrls);
         try {
             assertValid();
             GitOperation<String> gitop = new GitOperation<String>() {
@@ -1007,7 +1007,7 @@ public final class GitDataStoreImpl extends AbstractComponent implements GitData
     public Iterable<PushResult> doPush(Git git, GitContext context) throws Exception {
         IllegalArgumentAssertion.assertNotNull(git, "git");
         IllegalArgumentAssertion.assertNotNull(context, "context");
-        LockHandle writeLock = aquireWriteLock();
+        LockHandle writeLock = aquireWriteLock("push");
         try {
             assertValid();
             LOGGER.debug("External call to push");
@@ -1022,7 +1022,7 @@ public final class GitDataStoreImpl extends AbstractComponent implements GitData
     public <T> T gitOperation(GitContext context, GitOperation<T> gitop, PersonIdent personIdent) {
         IllegalArgumentAssertion.assertNotNull(gitop, "gitop");
         IllegalArgumentAssertion.assertNotNull(context, "context");
-        LockHandle writeLock = aquireWriteLock();
+        LockHandle writeLock = aquireWriteLock("generic gitOperation");
         try {
             assertValid();
             LOGGER.debug("External call to execute a git operation: " + gitop);
@@ -1143,7 +1143,7 @@ public final class GitDataStoreImpl extends AbstractComponent implements GitData
     }
 
     private void doPullInternal() {
-        LockHandle writeLock = aquireWriteLock();
+        LockHandle writeLock = aquireWriteLock("pull");
         try {
            doPullInternal(new GitContext(), getCredentialsProvider(), true);
         } catch (Throwable e) {
@@ -1399,7 +1399,7 @@ public final class GitDataStoreImpl extends AbstractComponent implements GitData
         
         private void runRemoteUrlChanged(final String updateUrl) {
             IllegalArgumentAssertion.assertNotNull(updateUrl, "updateUrl");
-            LockHandle writeLock = aquireWriteLock();
+            LockHandle writeLock = aquireWriteLock("change remote git url to \"" + updateUrl + "\"");
             try {
                 // TODO(tdi): this is check=then-act, use permit
                 if (!isValid()) {
@@ -1516,7 +1516,7 @@ public final class GitDataStoreImpl extends AbstractComponent implements GitData
     class ImportExportHandler {
 
         void importFromFileSystem(final Path importPath) {
-            LockHandle writeLock = aquireWriteLock();
+            LockHandle writeLock = aquireWriteLock("import profiles from \"" + importPath + "\"");
             try {
                 assertValid();
 
