@@ -19,12 +19,16 @@
 
 package org.apache.curator.framework.imps;
 
+import com.google.common.annotations.VisibleForTesting;
 import com.google.common.base.Function;
 import com.google.common.base.Preconditions;
+import com.google.common.base.Throwables;
+import com.google.common.collect.ImmutableList;
 import org.apache.curator.CuratorConnectionLossException;
 import org.apache.curator.CuratorZookeeperClient;
 import org.apache.curator.RetryLoop;
-import org.apache.curator.TimeTrace;
+import org.apache.curator.drivers.OperationTrace;
+import org.apache.curator.framework.AuthInfo;
 import org.apache.curator.framework.CuratorFramework;
 import org.apache.curator.framework.CuratorFrameworkFactory;
 import org.apache.curator.framework.api.*;
@@ -37,6 +41,7 @@ import org.apache.curator.framework.state.ConnectionStateManager;
 import org.apache.curator.utils.DebugUtils;
 import org.apache.curator.utils.EnsurePath;
 import org.apache.curator.utils.ThreadUtils;
+import org.apache.curator.utils.ZKPaths;
 import org.apache.curator.utils.ZookeeperFactory;
 import org.apache.zookeeper.KeeperException;
 import org.apache.zookeeper.WatchedEvent;
@@ -45,6 +50,7 @@ import org.apache.zookeeper.ZooKeeper;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import java.util.Arrays;
+import java.util.List;
 import java.util.concurrent.BlockingQueue;
 import java.util.concurrent.Callable;
 import java.util.concurrent.DelayQueue;
@@ -57,7 +63,6 @@ import java.util.concurrent.atomic.AtomicReference;
 
 public class CuratorFrameworkImpl implements CuratorFramework
 {
-
     private final Logger log = LoggerFactory.getLogger(getClass());
     private final CuratorZookeeperClient client;
     private final ListenerContainer<CuratorListener> listeners;
@@ -67,13 +72,14 @@ public class CuratorFrameworkImpl implements CuratorFramework
     private final BlockingQueue<OperationAndData<?>> backgroundOperations;
     private final NamespaceImpl namespace;
     private final ConnectionStateManager connectionStateManager;
-    private final AtomicReference<AuthInfo> authInfo = new AtomicReference<AuthInfo>();
+    private final List<AuthInfo> authInfos;
     private final byte[] defaultData;
     private final FailedDeleteManager failedDeleteManager;
     private final CompressionProvider compressionProvider;
     private final ACLProvider aclProvider;
     private final NamespaceFacadeCache namespaceFacadeCache;
     private final NamespaceWatcherMap namespaceWatcherMap = new NamespaceWatcherMap(this);
+    private final boolean useContainerParentsIfAvailable;
 
     private volatile ExecutorService executorService;
     private final AtomicBoolean logAsErrorConnectionErrors = new AtomicBoolean(false);
@@ -86,29 +92,10 @@ public class CuratorFrameworkImpl implements CuratorFramework
     }
 
     volatile DebugBackgroundListener debugListener = null;
+    @VisibleForTesting
+    public volatile UnhandledErrorListener debugUnhandledErrorListener = null;
 
     private final AtomicReference<CuratorFrameworkState> state;
-
-    private static class AuthInfo
-    {
-        final String scheme;
-        final byte[] auth;
-
-        private AuthInfo(String scheme, byte[] auth)
-        {
-            this.scheme = scheme;
-            this.auth = auth;
-        }
-
-        @Override
-        public String toString()
-        {
-            return "AuthInfo{" +
-                "scheme='" + scheme + '\'' +
-                ", auth=" + Arrays.toString(auth) +
-                '}';
-        }
-    }
 
     public CuratorFrameworkImpl(CuratorFrameworkFactory.Builder builder)
     {
@@ -120,11 +107,6 @@ public class CuratorFrameworkImpl implements CuratorFramework
             {
                 CuratorEvent event = new CuratorEventImpl(CuratorFrameworkImpl.this, CuratorEventType.WATCHED, watchedEvent.getState().getIntValue(), unfixForNamespace(watchedEvent.getPath()), null, null, null, null, null, watchedEvent, null);
                 processEvent(event);
-            }
-
-            @Override
-            public String toString() {
-                return "Watcher for CuratorFrameworkImpl";
             }
         }, builder.getRetryPolicy(), builder.canBeReadOnly());
 
@@ -138,17 +120,24 @@ public class CuratorFrameworkImpl implements CuratorFramework
         compressionProvider = builder.getCompressionProvider();
         aclProvider = builder.getAclProvider();
         state = new AtomicReference<CuratorFrameworkState>(CuratorFrameworkState.LATENT);
+        useContainerParentsIfAvailable = builder.useContainerParentsIfAvailable();
 
         byte[] builderDefaultData = builder.getDefaultData();
         defaultData = (builderDefaultData != null) ? Arrays.copyOf(builderDefaultData, builderDefaultData.length) : new byte[0];
-
-        if ( builder.getAuthScheme() != null )
-        {
-            authInfo.set(new AuthInfo(builder.getAuthScheme(), builder.getAuthValue()));
-        }
+        authInfos = buildAuths(builder);
 
         failedDeleteManager = new FailedDeleteManager(this);
         namespaceFacadeCache = new NamespaceFacadeCache(this);
+    }
+
+    private List<AuthInfo> buildAuths(CuratorFrameworkFactory.Builder builder)
+    {
+        ImmutableList.Builder<AuthInfo> builder1 = ImmutableList.builder();
+        if ( builder.getAuthInfos() != null )
+        {
+            builder1.addAll(builder.getAuthInfos());
+        }
+        return builder1.build();
     }
 
     private ZookeeperFactory makeZookeeperFactory(final ZookeeperFactory actualZookeeperFactory)
@@ -159,10 +148,9 @@ public class CuratorFrameworkImpl implements CuratorFramework
             public ZooKeeper newZooKeeper(String connectString, int sessionTimeout, Watcher watcher, boolean canBeReadOnly) throws Exception
             {
                 ZooKeeper zooKeeper = actualZookeeperFactory.newZooKeeper(connectString, sessionTimeout, watcher, canBeReadOnly);
-                AuthInfo auth = authInfo.get();
-                if ( auth != null )
+                for ( AuthInfo auth : authInfos )
                 {
-                    zooKeeper.addAuthInfo(auth.scheme, auth.auth);
+                    zooKeeper.addAuthInfo(auth.getScheme(), auth.getAuth());
                 }
 
                 return zooKeeper;
@@ -175,7 +163,7 @@ public class CuratorFrameworkImpl implements CuratorFramework
         ThreadFactory threadFactory = builder.getThreadFactory();
         if ( threadFactory == null )
         {
-            threadFactory = ThreadUtils.newThreadFactory("CuratorFramework");
+            threadFactory = ThreadUtils.newThreadFactory("Framework");
         }
         return threadFactory;
     }
@@ -196,6 +184,14 @@ public class CuratorFrameworkImpl implements CuratorFramework
         namespaceFacadeCache = parent.namespaceFacadeCache;
         namespace = new NamespaceImpl(this, null);
         state = parent.state;
+        authInfos = parent.authInfos;
+        useContainerParentsIfAvailable = parent.useContainerParentsIfAvailable;
+    }
+
+    @Override
+    public void createContainers(String path) throws Exception
+    {
+        checkExists().creatingParentContainersIfNeeded().forPath(ZKPaths.makePath(path, "foo"));
     }
 
     @Override
@@ -215,6 +211,7 @@ public class CuratorFrameworkImpl implements CuratorFramework
     }
 
     @Override
+    @Deprecated
     public boolean isStarted()
     {
         return state.get() == CuratorFrameworkState.STARTED;
@@ -238,9 +235,7 @@ public class CuratorFrameworkImpl implements CuratorFramework
         log.info("Starting");
         if ( !state.compareAndSet(CuratorFrameworkState.LATENT, CuratorFrameworkState.STARTED) )
         {
-            IllegalStateException error = new IllegalStateException();
-            log.error("Cannot be started more than once", error);
-            throw error;
+            throw new IllegalStateException("Cannot be started more than once");
         }
 
         try
@@ -259,25 +254,24 @@ public class CuratorFrameworkImpl implements CuratorFramework
                 }
             };
 
-            log.info("GG: adding listener to connectionStateListenable " + listener);
             this.getConnectionStateListenable().addListener(listener);
 
             client.start();
 
-            executorService = Executors.newFixedThreadPool(2, threadFactory);  // 1 for listeners, 1 for background ops
-
+            executorService = Executors.newSingleThreadScheduledExecutor(threadFactory);
             executorService.submit(new Callable<Object>()
+            {
+                @Override
+                public Object call() throws Exception
                 {
-                    @Override
-                    public Object call() throws Exception
-                    {
-                        backgroundOperationsLoop();
-                        return null;
-                    }
-                });
+                    backgroundOperationsLoop();
+                    return null;
+                }
+            });
         }
         catch ( Exception e )
         {
+            ThreadUtils.checkInterrupted(e);
             handleBackgroundOperationException(null, e);
         }
     }
@@ -289,22 +283,23 @@ public class CuratorFrameworkImpl implements CuratorFramework
         if ( state.compareAndSet(CuratorFrameworkState.STARTED, CuratorFrameworkState.STOPPED) )
         {
             listeners.forEach(new Function<CuratorListener, Void>()
+            {
+                @Override
+                public Void apply(CuratorListener listener)
                 {
-                    @Override
-                    public Void apply(CuratorListener listener)
+                    CuratorEvent event = new CuratorEventImpl(CuratorFrameworkImpl.this, CuratorEventType.CLOSING, 0, null, null, null, null, null, null, null, null);
+                    try
                     {
-                        CuratorEvent event = new CuratorEventImpl(CuratorFrameworkImpl.this, CuratorEventType.CLOSING, 0, null, null, null, null, null, null, null, null);
-                        try
-                        {
-                            listener.eventReceived(CuratorFrameworkImpl.this, event);
-                        }
-                        catch ( Exception e )
-                        {
-                            log.error("Exception while sending Closing event", e);
-                        }
-                        return null;
+                        listener.eventReceived(CuratorFrameworkImpl.this, event);
                     }
-                });
+                    catch ( Exception e )
+                    {
+                        ThreadUtils.checkInterrupted(e);
+                        log.error("Exception while sending Closing event", e);
+                    }
+                    return null;
+                }
+            });
 
             if ( executorService != null )
             {
@@ -319,19 +314,17 @@ public class CuratorFrameworkImpl implements CuratorFramework
                     Thread.currentThread().interrupt();
                 }
             }
+
             listeners.clear();
             unhandledErrorListeners.clear();
             connectionStateManager.close();
             client.close();
             namespaceWatcherMap.close();
-            if ( executorService != null )
-            {
-                executorService.shutdownNow();
-            }
         }
     }
 
     @Override
+    @Deprecated
     public CuratorFramework nonNamespaceView()
     {
         return usingNamespace(null);
@@ -347,7 +340,7 @@ public class CuratorFrameworkImpl implements CuratorFramework
     @Override
     public CuratorFramework usingNamespace(String newNamespace)
     {
-        Preconditions.checkState(isStarted(), "instance must be started before calling this method");
+        Preconditions.checkState(getState() == CuratorFrameworkState.STARTED, "instance must be started before calling this method");
 
         return namespaceFacadeCache.get(newNamespace);
     }
@@ -355,7 +348,7 @@ public class CuratorFrameworkImpl implements CuratorFramework
     @Override
     public CreateBuilder create()
     {
-        Preconditions.checkState(isStarted(), "instance must be started before calling this method");
+        Preconditions.checkState(getState() == CuratorFrameworkState.STARTED, "instance must be started before calling this method");
 
         return new CreateBuilderImpl(this);
     }
@@ -363,7 +356,7 @@ public class CuratorFrameworkImpl implements CuratorFramework
     @Override
     public DeleteBuilder delete()
     {
-        Preconditions.checkState(isStarted(), "instance must be started before calling this method");
+        Preconditions.checkState(getState() == CuratorFrameworkState.STARTED, "instance must be started before calling this method");
 
         return new DeleteBuilderImpl(this);
     }
@@ -371,7 +364,7 @@ public class CuratorFrameworkImpl implements CuratorFramework
     @Override
     public ExistsBuilder checkExists()
     {
-        Preconditions.checkState(isStarted(), "instance must be started before calling this method");
+        Preconditions.checkState(getState() == CuratorFrameworkState.STARTED, "instance must be started before calling this method");
 
         return new ExistsBuilderImpl(this);
     }
@@ -379,7 +372,7 @@ public class CuratorFrameworkImpl implements CuratorFramework
     @Override
     public GetDataBuilder getData()
     {
-        Preconditions.checkState(isStarted(), "instance must be started before calling this method");
+        Preconditions.checkState(getState() == CuratorFrameworkState.STARTED, "instance must be started before calling this method");
 
         return new GetDataBuilderImpl(this);
     }
@@ -387,7 +380,7 @@ public class CuratorFrameworkImpl implements CuratorFramework
     @Override
     public SetDataBuilder setData()
     {
-        Preconditions.checkState(isStarted(), "instance must be started before calling this method");
+        Preconditions.checkState(getState() == CuratorFrameworkState.STARTED, "instance must be started before calling this method");
 
         return new SetDataBuilderImpl(this);
     }
@@ -395,7 +388,7 @@ public class CuratorFrameworkImpl implements CuratorFramework
     @Override
     public GetChildrenBuilder getChildren()
     {
-        Preconditions.checkState(isStarted(), "instance must be started before calling this method");
+        Preconditions.checkState(getState() == CuratorFrameworkState.STARTED, "instance must be started before calling this method");
 
         return new GetChildrenBuilderImpl(this);
     }
@@ -403,7 +396,7 @@ public class CuratorFrameworkImpl implements CuratorFramework
     @Override
     public GetACLBuilder getACL()
     {
-        Preconditions.checkState(isStarted(), "instance must be started before calling this method");
+        Preconditions.checkState(getState() == CuratorFrameworkState.STARTED, "instance must be started before calling this method");
 
         return new GetACLBuilderImpl(this);
     }
@@ -411,7 +404,7 @@ public class CuratorFrameworkImpl implements CuratorFramework
     @Override
     public SetACLBuilder setACL()
     {
-        Preconditions.checkState(isStarted(), "instance must be started before calling this method");
+        Preconditions.checkState(getState() == CuratorFrameworkState.STARTED, "instance must be started before calling this method");
 
         return new SetACLBuilderImpl(this);
     }
@@ -419,7 +412,7 @@ public class CuratorFrameworkImpl implements CuratorFramework
     @Override
     public CuratorTransaction inTransaction()
     {
-        Preconditions.checkState(isStarted(), "instance must be started before calling this method");
+        Preconditions.checkState(getState() == CuratorFrameworkState.STARTED, "instance must be started before calling this method");
 
         return new CuratorTransactionImpl(this);
     }
@@ -445,7 +438,7 @@ public class CuratorFrameworkImpl implements CuratorFramework
     @Override
     public void sync(String path, Object context)
     {
-        Preconditions.checkState(isStarted(), "instance must be started before calling this method");
+        Preconditions.checkState(getState() == CuratorFrameworkState.STARTED, "instance must be started before calling this method");
 
         path = fixForNamespace(path);
 
@@ -501,9 +494,13 @@ public class CuratorFrameworkImpl implements CuratorFramework
         return compressionProvider;
     }
 
+    boolean useContainerParentsIfAvailable()
+    {
+        return useContainerParentsIfAvailable;
+    }
+
     <DATA_TYPE> void processBackgroundOperation(OperationAndData<DATA_TYPE> operationAndData, CuratorEvent event)
     {
-        log.info("GG: processBackgroundOperation(" + operationAndData + ", " + event + ")");
         boolean isInitialExecution = (event == null);
         if ( isInitialExecution )
         {
@@ -538,8 +535,10 @@ public class CuratorFrameworkImpl implements CuratorFramework
 
     <DATA_TYPE> void queueOperation(OperationAndData<DATA_TYPE> operationAndData)
     {
-        log.info("GG offering background operation " + operationAndData);
-        backgroundOperations.offer(operationAndData);
+        if ( getState() == CuratorFrameworkState.STARTED )
+        {
+            backgroundOperations.offer(operationAndData);
+        }
     }
 
     void logError(String reason, final Throwable e)
@@ -562,10 +561,6 @@ public class CuratorFrameworkImpl implements CuratorFramework
                     log.debug(reason, e);
                 }
             }
-            else if( e instanceof IllegalStateException && "Client is not started".equals(e.getMessage()))
-            {
-                log.debug(reason, e);
-            }
             else
             {
                 log.error(reason, e);
@@ -574,14 +569,19 @@ public class CuratorFrameworkImpl implements CuratorFramework
 
         final String localReason = reason;
         unhandledErrorListeners.forEach(new Function<UnhandledErrorListener, Void>()
+        {
+            @Override
+            public Void apply(UnhandledErrorListener listener)
             {
-                @Override
-                public Void apply(UnhandledErrorListener listener)
-                {
-                    listener.unhandledError(localReason, e);
-                    return null;
-                }
-            });
+                listener.unhandledError(localReason, e);
+                return null;
+            }
+        });
+
+        if ( debugUnhandledErrorListener != null )
+        {
+            debugUnhandledErrorListener.unhandledError(reason, e);
+        }
     }
 
     String unfixForNamespace(String path)
@@ -591,7 +591,12 @@ public class CuratorFrameworkImpl implements CuratorFramework
 
     String fixForNamespace(String path)
     {
-        return namespace.fixForNamespace(path);
+        return namespace.fixForNamespace(path, false);
+    }
+
+    String fixForNamespace(String path, boolean isSequential)
+    {
+        return namespace.fixForNamespace(path, isSequential);
     }
 
     byte[] getDefaultData()
@@ -687,13 +692,12 @@ public class CuratorFrameworkImpl implements CuratorFramework
                 }
                 else
                 {
-                    log.info("GG: suspendConnection() failure ignored as the ZooKeeper instance was reset. Retrying.");
+                    log.debug("suspendConnection() failure ignored as the ZooKeeper instance was reset. Retrying.");
                     // send -1 to signal that if it happens again, punt and mark the connection lost
                     doSyncForSuspendedConnection(-1);
                 }
             }
         };
-        log.info("GG: CFI.doSyncForSuspendedConnection(" + instanceIndex + ")");
         performBackgroundOperation(new OperationAndData<String>(operation, "/", null, errorCallback, null));
     }
 
@@ -723,8 +727,9 @@ public class CuratorFrameworkImpl implements CuratorFramework
             {
                 e = (code != null) ? KeeperException.create(code) : null;
             }
-            catch ( Throwable ignore )
+            catch ( Throwable t )
             {
+                ThreadUtils.checkInterrupted(t);
             }
             if ( e == null )
             {
@@ -745,6 +750,7 @@ public class CuratorFrameworkImpl implements CuratorFramework
         }
         catch ( Exception e )
         {
+            ThreadUtils.checkInterrupted(e);
             handleBackgroundOperationException(operationAndData, e);
         }
     }
@@ -765,7 +771,6 @@ public class CuratorFrameworkImpl implements CuratorFramework
                     {
                         log.debug("Retrying operation");
                     }
-                    log.info("GG retry allowed, offering background operation " + operationAndData);
                     backgroundOperations.offer(operationAndData);
                     break;
                 }
@@ -775,7 +780,6 @@ public class CuratorFrameworkImpl implements CuratorFramework
                     {
                         log.debug("Retry policy did not allow retry");
                     }
-                    log.info("GG retry NOT allowed, retries exhausted for operation " + operationAndData);
                     if ( operationAndData.getErrorCallback() != null )
                     {
                         operationAndData.getErrorCallback().retriesExhausted(operationAndData);
@@ -790,26 +794,31 @@ public class CuratorFrameworkImpl implements CuratorFramework
 
     private void backgroundOperationsLoop()
     {
-        log.info("GG: starting CuratorFrameworkLoop.backgroundOperationsLoop()");
-        while ( !Thread.currentThread().isInterrupted() )
+        try
         {
-            OperationAndData<?> operationAndData;
-            try
+            while ( state.get() == CuratorFrameworkState.STARTED )
             {
-                operationAndData = backgroundOperations.take();
-                if ( debugListener != null )
+                OperationAndData<?> operationAndData;
+                try
                 {
-                    debugListener.listen(operationAndData);
+                    operationAndData = backgroundOperations.take();
+                    if ( debugListener != null )
+                    {
+                        debugListener.listen(operationAndData);
+                    }
+                    performBackgroundOperation(operationAndData);
+                }
+                catch ( InterruptedException e )
+                {
+                    // swallow the interrupt as it's only possible from either a background
+                    // operation and, thus, doesn't apply to this loop or the instance
+                    // is being closed in which case the while test will get it
                 }
             }
-            catch ( InterruptedException e )
-            {
-                Thread.currentThread().interrupt();
-                break;
-            }
-
-            log.info("GG: background operation taken, performing " + operationAndData);
-            performBackgroundOperation(operationAndData);
+        }
+        finally
+        {
+            log.info("backgroundOperationsLoop exiting");
         }
     }
 
@@ -819,7 +828,6 @@ public class CuratorFrameworkImpl implements CuratorFramework
         {
             if ( client.isConnected() )
             {
-                log.info("GG: client.isConnected() -> operationAndData.callPerformBackgroundOperation()");
                 operationAndData.callPerformBackgroundOperation();
             }
             else
@@ -830,12 +838,13 @@ public class CuratorFrameworkImpl implements CuratorFramework
                     throw new CuratorConnectionLossException();
                 }
                 operationAndData.sleepFor(1, TimeUnit.SECONDS);
-                log.info("GG: !client.isConnected() -> queueOperation(" + operationAndData + ")");
                 queueOperation(operationAndData);
             }
         }
         catch ( Throwable e )
         {
+            ThreadUtils.checkInterrupted(e);
+
             /**
              * Fix edge case reported as CURATOR-52. ConnectionState.checkTimeouts() throws KeeperException.ConnectionLossException
              * when the initial (or previously failed) connection cannot be re-established. This needs to be run through the retry policy
@@ -843,7 +852,6 @@ public class CuratorFrameworkImpl implements CuratorFramework
              */
             if ( e instanceof CuratorConnectionLossException )
             {
-                log.info("GG: caught " + e + " checking background retry");
                 WatchedEvent watchedEvent = new WatchedEvent(Watcher.Event.EventType.None, Watcher.Event.KeeperState.Disconnected, null);
                 CuratorEvent event = new CuratorEventImpl(this, CuratorEventType.WATCHED, KeeperException.Code.CONNECTIONLOSS.intValue(), null, null, operationAndData.getContext(), null, null, null, watchedEvent, null);
                 if ( checkBackgroundRetry(operationAndData, event) )
@@ -857,7 +865,6 @@ public class CuratorFrameworkImpl implements CuratorFramework
             }
             else
             {
-                log.info("GG: caught " + e + " handling exception immediately");
                 handleBackgroundOperationException(operationAndData, e);
             }
         }
@@ -865,7 +872,6 @@ public class CuratorFrameworkImpl implements CuratorFramework
 
     private void processEvent(final CuratorEvent curatorEvent)
     {
-        log.info("GG: processEvent(" + curatorEvent + ")");
         if ( curatorEvent.getType() == CuratorEventType.WATCHED )
         {
             validateConnection(curatorEvent.getWatchedEvent().getState());
@@ -878,12 +884,13 @@ public class CuratorFrameworkImpl implements CuratorFramework
             {
                 try
                 {
-                    TimeTrace trace = client.startTracer("EventListener");
+                    OperationTrace trace = client.startAdvancedTracer("EventListener");
                     listener.eventReceived(CuratorFrameworkImpl.this, curatorEvent);
                     trace.commit();
                 }
                 catch ( Exception e )
                 {
+                    ThreadUtils.checkInterrupted(e);
                     logError("Event listener threw exception", e);
                 }
                 return null;
