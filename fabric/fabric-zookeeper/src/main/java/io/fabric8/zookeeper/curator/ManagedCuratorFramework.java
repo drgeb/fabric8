@@ -117,6 +117,7 @@ public final class ManagedCuratorFramework extends AbstractComponent implements 
             try {
                 // ENTESB-2111: first unregister CuratorFramework service, as it might be used in @Deactivate
                 // methods of SCR components which depend on CF
+                LOGGER.info("GG: State.run(): registration = " + registration + ", curatorCompleteRegistration = " + curatorCompleteRegistration);
                 if (registration != null) {
                     registration.unregister();
                     registration = null;
@@ -126,6 +127,7 @@ public final class ManagedCuratorFramework extends AbstractComponent implements 
                     curatorCompleteRegistration = null;
                 }
                 // then stop it
+                LOGGER.info("GG: State.run(): curator = " + curator);
                 if (curator != null) {
                     curator.getZookeeperClient().stop();
                 }
@@ -141,6 +143,7 @@ public final class ManagedCuratorFramework extends AbstractComponent implements 
                     curator.getUnhandledErrorListenable().addListener(this, executor);
 
                         try {
+                            LOGGER.info("Starting curator");
                             curator.start();
                         } catch (Exception e){
                             LOGGER.warn("Unable to start ZookeeperClient", e);
@@ -156,14 +159,21 @@ public final class ManagedCuratorFramework extends AbstractComponent implements 
         public void stateChanged(CuratorFramework client, ConnectionState newState) {
             if (newState == ConnectionState.CONNECTED || newState == ConnectionState.READ_ONLY || newState == ConnectionState.RECONNECTED) {
                 retryCount.set(0);
+                LOGGER.info("GG: stateChanged(" + newState + ")");
                 if (registration == null) {
+                    LOGGER.info("GG: register CuratorFramework");
                     // this is where the magic happens...
                     registration = bundleContext.registerService(CuratorFramework.class, curator, null);
+                    LOGGER.info("GG: registered CuratorFramework");
+                    LOGGER.info("GG: register CuratorComplete");
                     // 12 (at least) seconds passed, >100 SCR components were activated
                     curatorCompleteRegistration = bundleContext.registerService(CuratorComplete.class, new CuratorCompleteService(), null);
+                    LOGGER.info("GG: registered CuratorComplete");
                 }
             }
+            LOGGER.info("GG: Calling stateChanged");
             for (ConnectionStateListener listener : connectionStateListeners) {
+                LOGGER.info("GG: Calling stateChanged for " + listener);
                 listener.stateChanged(client, newState);
             }
             if (newState == ConnectionState.LOST) {
@@ -181,12 +191,16 @@ public final class ManagedCuratorFramework extends AbstractComponent implements 
             closed.set(true);
             CuratorFramework curator = this.curator;
             if (curator != null) {
+                LOGGER.info("GG: Calling stateChanged(LOST) in close()");
                 for (ConnectionStateListener listener : connectionStateListeners) {
+                    LOGGER.info("GG: Calling stateChanged(LOST) in close() for " + listener);
                     listener.stateChanged(curator, ConnectionState.LOST);
                 }
+                LOGGER.info("GG: Stopping ZK client");
                 curator.getZookeeperClient().stop();
             }
             try {
+                LOGGER.info("GG: submitting this " + this);
                 executor.submit(this).get();
             } catch (Exception e) {
                 LOGGER.warn("Error while closing curator", e);
@@ -220,6 +234,7 @@ public final class ManagedCuratorFramework extends AbstractComponent implements 
 
     @Activate
     void activate(BundleContext bundleContext, Map<String, ?> configuration) throws Exception {
+        LOGGER.info("GG: @Activate");
         this.bundleContext = bundleContext;
         CuratorConfig config = new CuratorConfig();
         configurer.configure(configuration, config);
@@ -227,6 +242,7 @@ public final class ManagedCuratorFramework extends AbstractComponent implements 
         if (!Strings.isNullOrEmpty(config.getZookeeperUrl())) {
             State next = new State(config);
             if (state.compareAndSet(null, next)) {
+                LOGGER.info("GG: submitting new state in @Activate " + next);
                 executor.submit(next);
             }
         }
@@ -235,6 +251,7 @@ public final class ManagedCuratorFramework extends AbstractComponent implements 
 
     @Modified
     void modified(Map<String, ?> configuration) throws Exception {
+        LOGGER.info("GG: @Modified");
         CuratorConfig config = new CuratorConfig();
         configurer.configure(configuration, this);
         configurer.configure(configuration, config);
@@ -252,16 +269,22 @@ public final class ManagedCuratorFramework extends AbstractComponent implements 
                 } else {
                     next.close();
                 }
+            } else {
+                LOGGER.info("GG: config not different than oldConfiguration");
             }
+        } else {
+            LOGGER.info("GG: config.getZookeeperUrl() == null");
         }
     }
 
     @Deactivate
     void deactivate() throws InterruptedException {
+        LOGGER.info("GG: @Deactivate");
         deactivateComponent();
         State prev = state.getAndSet(null);
         if (prev != null) {
             CuratorFrameworkLocator.unbindCurator(prev.curator);
+            LOGGER.info("GG: closing prev " + prev);
             prev.close();
         }
         executor.shutdown();
@@ -272,6 +295,7 @@ public final class ManagedCuratorFramework extends AbstractComponent implements 
      * Builds a {@link org.apache.curator.framework.CuratorFramework} from the specified {@link java.util.Map<String, ?>}.
      */
     private synchronized CuratorFramework buildCuratorFramework(CuratorConfig curatorConfig) {
+        LOGGER.info("GG: buildCuratorFramework: " + curatorConfig);
         CuratorFrameworkFactory.Builder builder = CuratorFrameworkFactory.builder()
                 .canBeReadOnly(true)
                 .ensembleProvider(new FixedEnsembleProvider(curatorConfig.getZookeeperUrl()))
@@ -296,15 +320,18 @@ public final class ManagedCuratorFramework extends AbstractComponent implements 
     }
 
     void bindConnectionStateListener(ConnectionStateListener connectionStateListener) {
+        LOGGER.info("GG: bindConnectionStateListener(" + connectionStateListener + ")");
         connectionStateListeners.add(connectionStateListener);
         State curr = state.get();
         CuratorFramework curator = curr != null ? curr.curator : null;
         if (curator != null && curator.getZookeeperClient().isConnected()) {
+            LOGGER.info("GG: manually calling stateChanged(CONNECTED) on " + connectionStateListener);
             connectionStateListener.stateChanged(curator, ConnectionState.CONNECTED);
         }
     }
 
     void unbindConnectionStateListener(ConnectionStateListener connectionStateListener) {
+        LOGGER.info("GG: unbindConnectionStateListener(" + connectionStateListener + ")");
         connectionStateListeners.remove(connectionStateListener);
     }
 

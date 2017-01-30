@@ -98,6 +98,11 @@ public class ZooKeeperGroup<T extends NodeState> implements Group<T> {
                 offerOperation(new RefreshOperation(ZooKeeperGroup.this, RefreshMode.STANDARD));
             }
         }
+
+        @Override
+        public String toString() {
+            return "childrenWatcher for ZKG " + ZooKeeperGroup.this;
+        }
     };
 
     private final Watcher dataWatcher = new Watcher() {
@@ -112,6 +117,11 @@ public class ZooKeeperGroup<T extends NodeState> implements Group<T> {
             } catch (Exception e) {
                 handleException(e);
             }
+        }
+
+        @Override
+        public String toString() {
+            return "dataWatcher for ZKG " + ZooKeeperGroup.this;
         }
     };
 
@@ -159,7 +169,7 @@ public class ZooKeeperGroup<T extends NodeState> implements Group<T> {
      * Start the cache. The cache is not started automatically. You must call this method.
      */
     public void start() {
-        LOG.info("Starting ZK Group for path \"" + path + "\"");
+        LOG.info("Starting ZK Group for source \"" + source + "\", path \"" + path + "\" and class \"" + clazz + "\"");
         if (started.compareAndSet(false, true)) {
             connected.set(client.getZookeeperClient().isConnected());
 
@@ -184,7 +194,7 @@ public class ZooKeeperGroup<T extends NodeState> implements Group<T> {
      */
     @Override
     public void close() throws IOException {
-        LOG.debug(this + ".close, connected:" + connected);
+        LOG.info("GG: ZK Group for source \"" + source + "\", path \"" + path + "\": close, connected:" + connected);
         if (started.compareAndSet(true, false)) {
             client.getConnectionStateListenable().removeListener(connectionStateListener);
             executorService.shutdownNow();
@@ -217,6 +227,7 @@ public class ZooKeeperGroup<T extends NodeState> implements Group<T> {
 
     @Override
     public void add(GroupListener<T> listener) {
+        LOG.info("GG: Adding listener to " + this + ": " + listener);
         listeners.addListener(listener);
     }
 
@@ -235,6 +246,7 @@ public class ZooKeeperGroup<T extends NodeState> implements Group<T> {
                         ||   state != null && oldState == null
                         || !Arrays.equals(encode(state), encode(oldState));
             if (update) {
+                LOG.info("GG: ZK " + this + ": update state");
                 offerOperation(new CompositeOperation(
                         new RefreshOperation(this, RefreshMode.FORCE_GET_DATA_AND_STAT),
                         new UpdateOperation<T>(this, state)
@@ -282,6 +294,7 @@ public class ZooKeeperGroup<T extends NodeState> implements Group<T> {
         String pathId = client.create().creatingParentsIfNeeded()
             .withMode(CreateMode.EPHEMERAL_SEQUENTIAL)
             .forPath(path + "/0", encode(state));
+        LOG.info("GG: createEphemeralNode in ZK group " + this + " for path " + path + "/0");
         if (LOG.isTraceEnabled()) {
             // state.toString() invokes Jackson ObjectMapper serialization
             LOG.trace(this + ", state:" + state + ", new ephemeralSequential path:" + pathId);
@@ -444,6 +457,7 @@ public class ZooKeeperGroup<T extends NodeState> implements Group<T> {
 
     void refresh(final RefreshMode mode) throws Exception {
         try {
+            LOG.info("GG: ZK " + this + ": refresh");
             ensurePath.ensure(client.getZookeeperClient());
             List<String> children = client.getChildren().usingWatcher(childrenWatcher).forPath(path);
             Collections.sort(children, new Comparator<String>() {
@@ -459,12 +473,14 @@ public class ZooKeeperGroup<T extends NodeState> implements Group<T> {
     }
 
     void callListeners(final GroupListener.GroupEvent event) {
+        LOG.info("GG: ZK " + this + ": call listeners");
         listeners.forEach
                 (
                         new Function<GroupListener<T>, Void>() {
                             @Override
                             public Void apply(GroupListener<T> listener) {
                                 try {
+                                    LOG.info("GG: ZK " + this + ": call listener " + listener + ", event " + event);
                                     listener.groupEvent(ZooKeeperGroup.this, event);
                                 } catch (Exception e) {
                                     handleException(e);
@@ -513,6 +529,7 @@ public class ZooKeeperGroup<T extends NodeState> implements Group<T> {
     }
 
     private void handleStateChange(ConnectionState newState) {
+        LOG.info("GG: ZK Group for source \"" + source + "\", path \"" + path + "\" handleStateChange(" + newState + ")");
         switch (newState) {
             case SUSPENDED:
             case LOST: {
@@ -568,6 +585,7 @@ public class ZooKeeperGroup<T extends NodeState> implements Group<T> {
         if (resultCode == KeeperException.Code.OK.intValue()) {
             // otherwise - node must have dropped or something - we should be getting another event
             ChildData<T> data = new ChildData<T>(fullPath, stat, bytes, decode(bytes));
+            LOG.info("GG: ZK: " + this + ": apply new data: " + data);
             ChildData<T> previousData = currentData.put(fullPath, data);
             if (previousData == null || previousData.getStat().getVersion() != stat.getVersion()) {
                 offerOperation(new EventOperation(this, GroupListener.GroupEvent.CHANGED));
@@ -578,7 +596,9 @@ public class ZooKeeperGroup<T extends NodeState> implements Group<T> {
     private void mainLoop() {
         while (started.get() && !Thread.currentThread().isInterrupted()) {
             try {
-                operations.take().invoke();
+                Operation op = operations.take();
+                LOG.info("GG: ZK Group for source \"" + source + "\", path \"" + this.path + "\": invoking " + op);
+                op.invoke();
             } catch (InterruptedException e) {
                 Thread.currentThread().interrupt();
                 break;
@@ -608,6 +628,7 @@ public class ZooKeeperGroup<T extends NodeState> implements Group<T> {
 
     private void offerOperation(Operation operation) {
         if (!operations.contains(operation)) {
+            LOG.info("GG: ZK Group for source \"" + source + "\", path \"" + path + "\" offerOperation: " + operation);
             operations.offer(operation);
         }
 //        operations.remove(operation);   // avoids herding for refresh operations
@@ -631,5 +652,10 @@ public class ZooKeeperGroup<T extends NodeState> implements Group<T> {
     @VisibleForTesting
     void setId(String id) {
         this.id = id;
+    }
+
+    @Override
+    public String toString() {
+        return "<ZK Group for source=\"" + source + "\", path=\"" + path + "\", clazz=\"" + clazz + "\">";
     }
 }
