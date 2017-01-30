@@ -19,9 +19,12 @@
 package org.apache.curator;
 
 import org.apache.curator.utils.CloseableUtils;
+import org.apache.curator.drivers.EventTrace;
+import org.apache.curator.drivers.OperationTrace;
 import org.apache.curator.drivers.TracerDriver;
 import org.apache.curator.ensemble.EnsembleProvider;
 import org.apache.curator.utils.DebugUtils;
+import org.apache.curator.utils.ThreadUtils;
 import org.apache.curator.utils.ZookeeperFactory;
 import org.apache.zookeeper.KeeperException;
 import org.apache.zookeeper.WatchedEvent;
@@ -39,11 +42,9 @@ import java.util.concurrent.atomic.AtomicReference;
 
 class ConnectionState implements Watcher, Closeable
 {
-    public static Logger LOG = LoggerFactory.getLogger(ConnectionState.class);
-
     private static final int MAX_BACKGROUND_EXCEPTIONS = 10;
     private static final boolean LOG_EVENTS = Boolean.getBoolean(DebugUtils.PROPERTY_LOG_EVENTS);
-    private final Logger log = LoggerFactory.getLogger(getClass());
+    private static final Logger log = LoggerFactory.getLogger(ConnectionState.class);
     private final HandleHolder zooKeeper;
     private final AtomicBoolean isConnected = new AtomicBoolean(false);
     private final EnsembleProvider ensembleProvider;
@@ -57,18 +58,15 @@ class ConnectionState implements Watcher, Closeable
 
     ConnectionState(ZookeeperFactory zookeeperFactory, EnsembleProvider ensembleProvider, int sessionTimeoutMs, int connectionTimeoutMs, Watcher parentWatcher, AtomicReference<TracerDriver> tracer, boolean canBeReadOnly)
     {
-        LOG.info("GG: creating ConnectionState " + this);
         this.ensembleProvider = ensembleProvider;
         this.sessionTimeoutMs = sessionTimeoutMs;
         this.connectionTimeoutMs = connectionTimeoutMs;
         this.tracer = tracer;
         if ( parentWatcher != null )
         {
-            LOG.info("GG: Adding first parent watcher : " + parentWatcher);
             parentWatchers.offer(parentWatcher);
         }
 
-        LOG.info("GG: creating HandleHolder with watcher = " + this);
         zooKeeper = new HandleHolder(zookeeperFactory, this, ensembleProvider, sessionTimeoutMs, canBeReadOnly);
     }
 
@@ -82,8 +80,7 @@ class ConnectionState implements Watcher, Closeable
         Exception exception = backgroundExceptions.poll();
         if ( exception != null )
         {
-            log.error("Background exception caught", exception);
-            tracer.get().addCount("background-exceptions", 1);
+            new EventTrace("background-exceptions", tracer.get()).commit();
             throw exception;
         }
 
@@ -103,7 +100,7 @@ class ConnectionState implements Watcher, Closeable
 
     void start() throws Exception
     {
-        log.info("GG: Starting connection state " + this);
+        log.debug("Starting");
         ensembleProvider.start();
         reset();
     }
@@ -111,7 +108,7 @@ class ConnectionState implements Watcher, Closeable
     @Override
     public void close() throws IOException
     {
-        log.info("GG: Closing connection state " + this);
+        log.debug("Closing");
 
         CloseableUtils.closeQuietly(ensembleProvider);
         try
@@ -120,6 +117,7 @@ class ConnectionState implements Watcher, Closeable
         }
         catch ( Exception e )
         {
+            ThreadUtils.checkInterrupted(e);
             throw new IOException(e);
         }
         finally
@@ -130,13 +128,11 @@ class ConnectionState implements Watcher, Closeable
 
     void addParentWatcher(Watcher watcher)
     {
-        LOG.info("GG: Offering parent watcher : " + watcher);
         parentWatchers.offer(watcher);
     }
 
     void removeParentWatcher(Watcher watcher)
     {
-        LOG.info("GG: Removing parent watcher : " + watcher);
         parentWatchers.remove(watcher);
     }
 
@@ -148,32 +144,28 @@ class ConnectionState implements Watcher, Closeable
     @Override
     public void process(WatchedEvent event)
     {
-        LOG.info("GG: watched event: " + event);
         if ( LOG_EVENTS )
         {
             log.debug("ConnectState watcher: " + event);
         }
 
-        for ( Watcher parentWatcher : parentWatchers )
-        {
-            TimeTrace timeTrace = new TimeTrace("connection-state-parent-process", tracer.get());
-            LOG.info("GG: processing parent watcher: " + parentWatcher);
-            parentWatcher.process(event);
-            timeTrace.commit();
-        }
-
-        boolean wasConnected = isConnected.get();
-        boolean newIsConnected = wasConnected;
         if ( event.getType() == Watcher.Event.EventType.None )
         {
-            newIsConnected = checkState(event.getState(), wasConnected);
+            boolean wasConnected = isConnected.get();
+            boolean newIsConnected = checkState(event.getState(), wasConnected);
+            if ( newIsConnected != wasConnected )
+            {
+                isConnected.set(newIsConnected);
+                connectionStartMs = System.currentTimeMillis();
+            }
         }
 
-        if ( newIsConnected != wasConnected )
+        for ( Watcher parentWatcher : parentWatchers )
         {
-            isConnected.set(newIsConnected);
-            LOG.info("GG: change to isConnected: " + isConnected);
-            connectionStartMs = System.currentTimeMillis();
+
+            OperationTrace trace = new OperationTrace("connection-state-parent-process", tracer.get(), getSessionId());
+            parentWatcher.process(event);
+            trace.commit();
         }
     }
 
@@ -210,11 +202,27 @@ class ConnectionState implements Watcher, Closeable
                     {
                         log.error(String.format("Connection timed out for connection string (%s) and timeout (%d) / elapsed (%d)", zooKeeper.getConnectionString(), connectionTimeoutMs, elapsed), connectionLossException);
                     }
-                    tracer.get().addCount("connections-timed-out", 1);
+                    new EventTrace("connections-timed-out", tracer.get(), getSessionId()).commit();
                     throw connectionLossException;
                 }
             }
         }
+    }
+
+    /**
+     * Return the current session id
+     */
+    public long getSessionId() {
+        long sessionId = 0;
+        try {
+            ZooKeeper zk = zooKeeper.getZooKeeper();
+            if (zk != null) {
+                sessionId = zk.getSessionId();
+            }
+        } catch (Exception e) {
+            // Ignore the exception
+        }
+        return sessionId;
     }
 
     private synchronized void reset() throws Exception
@@ -224,11 +232,8 @@ class ConnectionState implements Watcher, Closeable
         instanceIndex.incrementAndGet();
 
         isConnected.set(false);
-        log.info("GG: reset, isConnected = false");
         connectionStartMs = System.currentTimeMillis();
-        log.info("GG: reset, closing zooKeeper");
         zooKeeper.closeAndReset();
-        log.info("GG: reset, and getZooKeeper again");
         zooKeeper.getZooKeeper();   // initiate connection
     }
 
@@ -273,6 +278,10 @@ class ConnectionState implements Watcher, Closeable
             break;
         }
         }
+        // the session expired is logged in handleExpiredSession, so not log here
+        if (state != Event.KeeperState.Expired) {
+            new EventTrace(state.toString(), tracer.get(), getSessionId()).commit();
+        }
 
         if ( checkNewConnectionString && zooKeeper.hasNewConnectionString() )
         {
@@ -285,7 +294,7 @@ class ConnectionState implements Watcher, Closeable
     private void handleNewConnectionString()
     {
         log.info("Connection string changed");
-        tracer.get().addCount("connection-string-changed", 1);
+        new EventTrace("connection-string-changed", tracer.get(), getSessionId()).commit();
 
         try
         {
@@ -293,6 +302,7 @@ class ConnectionState implements Watcher, Closeable
         }
         catch ( Exception e )
         {
+            ThreadUtils.checkInterrupted(e);
             queueBackgroundException(e);
         }
     }
@@ -300,7 +310,7 @@ class ConnectionState implements Watcher, Closeable
     private void handleExpiredSession()
     {
         log.warn("Session expired event received");
-        tracer.get().addCount("session-expired", 1);
+        new EventTrace("session-expired", tracer.get(), getSessionId()).commit();
 
         try
         {
@@ -308,6 +318,7 @@ class ConnectionState implements Watcher, Closeable
         }
         catch ( Exception e )
         {
+            ThreadUtils.checkInterrupted(e);
             queueBackgroundException(e);
         }
     }
