@@ -135,7 +135,11 @@ public final class ZooKeeperUtils {
     }
 
     public static List<String> getChildren(TreeCache cache, String path) throws Exception {
-        return cache.getChildrenNames(path);
+        Map<String, ChildData> currentChildren = cache.getCurrentChildren(path);
+        if (currentChildren != null) {
+            return new ArrayList<>(currentChildren.keySet());
+        }
+        return new ArrayList<>();
     }
 
     public static List<String> getAllChildren(CuratorFramework curator, String path) throws Exception {

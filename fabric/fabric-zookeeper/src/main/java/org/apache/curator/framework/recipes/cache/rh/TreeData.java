@@ -13,8 +13,9 @@
  *  implied.  See the License for the specific language governing
  *  permissions and limitations under the License.
  */
-package org.apache.curator.framework.recipes.cache;
+package org.apache.curator.framework.recipes.cache.rh;
 
+import org.apache.curator.framework.recipes.cache.ChildData;
 import org.apache.zookeeper.data.Stat;
 
 import java.util.Arrays;
