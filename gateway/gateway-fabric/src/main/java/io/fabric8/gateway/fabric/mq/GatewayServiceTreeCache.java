@@ -32,8 +32,8 @@ import java.util.concurrent.atomic.AtomicBoolean;
 
 import org.apache.curator.framework.CuratorFramework;
 import org.apache.curator.framework.recipes.cache.ChildData;
-import org.apache.curator.framework.recipes.cache.PathChildrenCacheEvent;
-import org.apache.curator.framework.recipes.cache.PathChildrenCacheListener;
+import org.apache.curator.framework.recipes.cache.TreeCacheEvent;
+import org.apache.curator.framework.recipes.cache.TreeCacheListener;
 import org.apache.curator.framework.recipes.cache.TreeCache;
 import io.fabric8.api.gravia.IllegalStateAssertion;
 import org.slf4j.Logger;
@@ -57,9 +57,9 @@ public class GatewayServiceTreeCache {
     private final AtomicBoolean active = new AtomicBoolean(false);
     private final ObjectMapper mapper = new ObjectMapper();
 
-    private final PathChildrenCacheListener treeListener = new PathChildrenCacheListener() {
+    private final TreeCacheListener treeListener = new TreeCacheListener() {
         @Override
-        public void childEvent(CuratorFramework curatorFramework, PathChildrenCacheEvent event) throws Exception {
+        public void childEvent(CuratorFramework curatorFramework, TreeCacheEvent event) throws Exception {
             treeCacheEvent(event);
         }
     };
@@ -89,8 +89,11 @@ public class GatewayServiceTreeCache {
 
     public void init() throws Exception {
         if (active.compareAndSet(false, true)) {
-            treeCache = new TreeCache(curator, zkPath, true, false, true, treeCacheExecutor);
-            treeCache.start(TreeCache.StartMode.NORMAL);
+            treeCache = TreeCache.newBuilder(curator, zkPath)
+                    .setCacheData(true)
+                    .setDataIsCompressed(false)
+                    .setExecutor(treeCacheExecutor).build();
+            treeCache.start();
             treeCache.getListenable().addListener(treeListener);
             LOG.info("Started a group listener for " + zkPath);
             for (TcpGateway gateway : gateways) {
@@ -112,13 +115,13 @@ public class GatewayServiceTreeCache {
         }
     }
 
-    protected void treeCacheEvent(PathChildrenCacheEvent event) {
+    protected void treeCacheEvent(TreeCacheEvent event) {
         ChildData childData = event.getData();
         if (childData == null) {
             return;
         }
         String path = childData.getPath();
-        PathChildrenCacheEvent.Type type = event.getType();
+        TreeCacheEvent.Type type = event.getType();
         byte[] data = childData.getData();
         if (data == null || data.length == 0 || path == null) {
             return;
@@ -128,10 +131,10 @@ public class GatewayServiceTreeCache {
         }
         boolean remove = false;
         switch (type) {
-            case CHILD_ADDED:
-            case CHILD_UPDATED:
+            case NODE_ADDED:
+            case NODE_UPDATED:
                 break;
-            case CHILD_REMOVED:
+            case NODE_REMOVED:
                 remove = true;
                 break;
             default:
