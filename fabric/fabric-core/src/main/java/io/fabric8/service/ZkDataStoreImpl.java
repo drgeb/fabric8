@@ -63,9 +63,9 @@ import java.util.concurrent.Executors;
 
 import org.apache.curator.framework.CuratorFramework;
 import org.apache.curator.framework.recipes.cache.ChildData;
+import org.apache.curator.framework.recipes.cache.PathChildrenCacheEvent;
+import org.apache.curator.framework.recipes.cache.PathChildrenCacheListener;
 import org.apache.curator.framework.recipes.cache.TreeCache;
-import org.apache.curator.framework.recipes.cache.TreeCacheEvent;
-import org.apache.curator.framework.recipes.cache.TreeCacheListener;
 import org.apache.felix.scr.annotations.Activate;
 import org.apache.felix.scr.annotations.Component;
 import org.apache.felix.scr.annotations.ConfigurationPolicy;
@@ -73,6 +73,7 @@ import org.apache.felix.scr.annotations.Deactivate;
 import org.apache.felix.scr.annotations.Reference;
 import org.apache.felix.scr.annotations.Service;
 import org.apache.zookeeper.KeeperException;
+import io.fabric8.api.gravia.IllegalArgumentAssertion;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
@@ -82,7 +83,7 @@ import org.slf4j.LoggerFactory;
 @ThreadSafe
 @Component(label = "Fabric8 DataStore", policy = ConfigurationPolicy.IGNORE, immediate = true, metatype = true)
 @Service({ DataStore.class })
-public class ZkDataStoreImpl extends AbstractComponent implements DataStore, TreeCacheListener {
+public class ZkDataStoreImpl extends AbstractComponent implements DataStore, PathChildrenCacheListener {
     
     private static final transient Logger LOGGER = LoggerFactory.getLogger(ZkDataStoreImpl.class);
     
@@ -115,20 +116,12 @@ public class ZkDataStoreImpl extends AbstractComponent implements DataStore, Tre
     }
     
     private void activateInternal() throws Exception {
-        // /fabric/configs
-        configCache = TreeCache.newBuilder(curator.get(), ZkPath.CONFIGS.getPath())
-                .setCacheData(true)
-                .setDataIsCompressed(false)
-                .setExecutor(cacheExecutor).build();
-        configCache.start();
+        configCache = new TreeCache(curator.get(), ZkPath.CONFIGS.getPath(), true, false, true, cacheExecutor);
+        configCache.start(TreeCache.StartMode.NORMAL);
         configCache.getListenable().addListener(this);
 
-        // /fabric/registry/containers/config
-        containerCache = TreeCache.newBuilder(curator.get(), ZkPath.CONTAINERS.getPath())
-                .setCacheData(true)
-                .setDataIsCompressed(false)
-                .setExecutor(cacheExecutor).build();
-        containerCache.start();
+        containerCache = new TreeCache(curator.get(), ZkPath.CONTAINERS.getPath(), true, false, true, cacheExecutor);
+        containerCache.start(TreeCache.StartMode.NORMAL);
         containerCache.getListenable().addListener(this);
 
     }
@@ -145,7 +138,7 @@ public class ZkDataStoreImpl extends AbstractComponent implements DataStore, Tre
     }
 
     @Override
-    public void childEvent(CuratorFramework client, TreeCacheEvent event) throws Exception {
+    public void childEvent(CuratorFramework client, PathChildrenCacheEvent event) throws Exception {
         if (isValid()) {
 
             // guard against events with null data or path
@@ -162,11 +155,11 @@ public class ZkDataStoreImpl extends AbstractComponent implements DataStore, Tre
                 data = childData.getData();
             }
 
-            TreeCacheEvent.Type type = event.getType();
+            PathChildrenCacheEvent.Type type = event.getType();
             switch (type) {
-                case NODE_ADDED:
-                case NODE_REMOVED:
-                case NODE_UPDATED:
+                case CHILD_ADDED:
+                case CHILD_REMOVED:
+                case CHILD_UPDATED:
                 case INITIALIZED:
                     if (shouldRunCallbacks(type, path) && !path.contains("password")) {
                         String s = data != null ? new String(data, "UTF-8") : "";
@@ -183,14 +176,14 @@ public class ZkDataStoreImpl extends AbstractComponent implements DataStore, Tre
     /**
      * Checks if the container should react to a change in the specified path.
      */
-    private boolean shouldRunCallbacks(TreeCacheEvent.Type type, String path) {
+    private boolean shouldRunCallbacks(PathChildrenCacheEvent.Type type, String path) {
         if (path == null) {
             return false;
         }
 
         String runtimeIdentity = runtimeProperties.get().getRuntimeIdentity();
         String currentVersion = getContainerVersion(runtimeIdentity);
-        return (path.startsWith(ZkPath.CONTAINERS.getPath()) && type.equals(TreeCacheEvent.Type.NODE_UPDATED)) ||
+        return (path.startsWith(ZkPath.CONTAINERS.getPath()) && type.equals(PathChildrenCacheEvent.Type.CHILD_UPDATED)) ||
                         path.equals(ZkPath.CONFIG_ENSEMBLES.getPath()) ||
                         path.equals(ZkPath.CONFIG_ENSEMBLE_URL.getPath()) ||
                         path.equals(ZkPath.CONFIG_ENSEMBLE_PASSWORD.getPath()) ||
@@ -384,7 +377,7 @@ public class ZkDataStoreImpl extends AbstractComponent implements DataStore, Tre
     public CreateContainerMetadata getContainerMetadata(String containerId, final ClassLoader classLoader) {
         assertValid();
         try {
-            byte[] encoded = getByteData(containerCache, ZkPath.CONTAINER_METADATA.getPath(containerId));
+            byte[] encoded = getByteData(configCache, ZkPath.CONTAINER_METADATA.getPath(containerId));
             if (encoded == null) {
                 return null;
             }
@@ -730,8 +723,8 @@ public class ZkDataStoreImpl extends AbstractComponent implements DataStore, Tre
         try {
             AutoScaleStatus answer = null;
             String zkPath = ZkPath.AUTO_SCALE_STATUS.getPath();
-            if (getStringData(curator.get(), zkPath) != null) {
-                String json = getStringData(curator.get(), zkPath);
+            if (configCache.getCurrentData(zkPath) != null) {
+                String json = getStringData(configCache, zkPath);
                 answer = RequirementsJson.autoScaleStatusFromJSON(json);
             }
             if (answer == null) {

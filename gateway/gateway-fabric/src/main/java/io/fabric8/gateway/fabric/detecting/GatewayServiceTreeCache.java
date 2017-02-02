@@ -32,8 +32,8 @@ import java.util.concurrent.atomic.AtomicBoolean;
 
 import org.apache.curator.framework.CuratorFramework;
 import org.apache.curator.framework.recipes.cache.ChildData;
-import org.apache.curator.framework.recipes.cache.TreeCacheEvent;
-import org.apache.curator.framework.recipes.cache.TreeCacheListener;
+import org.apache.curator.framework.recipes.cache.PathChildrenCacheEvent;
+import org.apache.curator.framework.recipes.cache.PathChildrenCacheListener;
 import org.apache.curator.framework.recipes.cache.TreeCache;
 import io.fabric8.api.gravia.IllegalStateAssertion;
 import org.slf4j.Logger;
@@ -56,9 +56,9 @@ public class GatewayServiceTreeCache {
     private final AtomicBoolean active = new AtomicBoolean(false);
     private final ObjectMapper mapper = new ObjectMapper();
 
-    private final TreeCacheListener treeListener = new TreeCacheListener() {
+    private final PathChildrenCacheListener treeListener = new PathChildrenCacheListener() {
         @Override
-        public void childEvent(CuratorFramework curatorFramework, TreeCacheEvent event) throws Exception {
+        public void childEvent(CuratorFramework curatorFramework, PathChildrenCacheEvent event) throws Exception {
             treeCacheEvent(event);
         }
     };
@@ -87,12 +87,9 @@ public class GatewayServiceTreeCache {
 
     public void init() throws Exception {
         if (active.compareAndSet(false, true)) {
-            treeCache = TreeCache.newBuilder(curator, zkPath)
-                    .setCacheData(true)
-                    .setDataIsCompressed(false)
-                    .setExecutor(treeCacheExecutor).build();
+            treeCache = new TreeCache(curator, zkPath, true, false, true, treeCacheExecutor);
             treeCache.getListenable().addListener(treeListener);
-            treeCache.start();
+            treeCache.start(TreeCache.StartMode.NORMAL);
             LOG.info("Started a group listener for " + zkPath);
         }
     }
@@ -106,14 +103,14 @@ public class GatewayServiceTreeCache {
         }
     }
 
-    protected void treeCacheEvent(TreeCacheEvent event) {
+    protected void treeCacheEvent(PathChildrenCacheEvent event) {
 
         ChildData childData = event.getData();
         if (childData == null) {
             return;
         }
         String path = childData.getPath();
-        TreeCacheEvent.Type type = event.getType();
+        PathChildrenCacheEvent.Type type = event.getType();
         byte[] data = childData.getData();
         if (data == null || data.length == 0 || path == null) {
             return;
@@ -127,10 +124,10 @@ public class GatewayServiceTreeCache {
 
         boolean remove = false;
         switch (type) {
-            case NODE_ADDED:
-            case NODE_UPDATED:
+            case CHILD_ADDED:
+            case CHILD_UPDATED:
                 break;
-            case NODE_REMOVED:
+            case CHILD_REMOVED:
                 remove = true;
                 break;
             default:

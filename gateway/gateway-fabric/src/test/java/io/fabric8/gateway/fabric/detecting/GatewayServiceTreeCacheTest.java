@@ -18,12 +18,12 @@ package io.fabric8.gateway.fabric.detecting;
 import io.fabric8.gateway.ServiceMap;
 import org.apache.curator.framework.CuratorFramework;
 import org.apache.curator.framework.recipes.cache.ChildData;
-import org.apache.curator.framework.recipes.cache.TreeCacheEvent;
+import org.apache.curator.framework.recipes.cache.PathChildrenCacheEvent;
 import org.junit.Test;
 
-import static org.apache.curator.framework.recipes.cache.TreeCacheEvent.Type.NODE_ADDED;
-import static org.apache.curator.framework.recipes.cache.TreeCacheEvent.Type.NODE_REMOVED;
-import static org.apache.curator.framework.recipes.cache.TreeCacheEvent.Type.NODE_UPDATED;
+import static org.apache.curator.framework.recipes.cache.PathChildrenCacheEvent.Type.CHILD_ADDED;
+import static org.apache.curator.framework.recipes.cache.PathChildrenCacheEvent.Type.CHILD_REMOVED;
+import static org.apache.curator.framework.recipes.cache.PathChildrenCacheEvent.Type.CHILD_UPDATED;
 import static org.junit.Assert.assertEquals;
 import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.when;
@@ -41,39 +41,39 @@ public class GatewayServiceTreeCacheTest {
 
         // Add container1 - master
         // Add container2 - slave
-        cache.treeCacheEvent(event(path, NODE_ADDED, data("test", "container1", "service1", "service2")));
-        cache.treeCacheEvent(event(path, NODE_ADDED, data("test", "container2")));
+        cache.treeCacheEvent(event(path, CHILD_ADDED, data("test", "container1", "service1", "service2")));
+        cache.treeCacheEvent(event(path, CHILD_ADDED, data("test", "container2")));
 
         assertEquals(1, serviceMap.getServices("default").size());
 
         // Remove container1
         // Update container2 - master
         // Add container1 - slave
-        cache.treeCacheEvent(event(path, NODE_REMOVED, data("test", "container1", "service1", "service2")));
-        cache.treeCacheEvent(event(path, NODE_UPDATED, data("test", "container2", "service1", "service2")));
-        cache.treeCacheEvent(event(path, NODE_ADDED, data("test", "container1")));
+        cache.treeCacheEvent(event(path, CHILD_REMOVED, data("test", "container1", "service1", "service2")));
+        cache.treeCacheEvent(event(path, CHILD_UPDATED, data("test", "container2", "service1", "service2")));
+        cache.treeCacheEvent(event(path, CHILD_ADDED, data("test", "container1")));
 
         assertEquals(1, serviceMap.getServices("default").size());
 
         // Remove container2
         // Update container1 - master
         // Add container2 - slave
-        cache.treeCacheEvent(event(path, NODE_REMOVED, data("test", "container2", "service1", "service2")));
-        cache.treeCacheEvent(event(path, NODE_UPDATED, data("test", "container1", "service1", "service2")));
-        cache.treeCacheEvent(event(path, NODE_ADDED, data("test", "container2")));
+        cache.treeCacheEvent(event(path, CHILD_REMOVED, data("test", "container2", "service1", "service2")));
+        cache.treeCacheEvent(event(path, CHILD_UPDATED, data("test", "container1", "service1", "service2")));
+        cache.treeCacheEvent(event(path, CHILD_ADDED, data("test", "container2")));
 
         assertEquals(1, serviceMap.getServices("default").size());
 
         // Remove container2
         // Add container2 - slave
-        cache.treeCacheEvent(event(path, NODE_REMOVED, data("test", "container2")));
-        cache.treeCacheEvent(event(path, NODE_ADDED, data("test", "container2")));
+        cache.treeCacheEvent(event(path, CHILD_REMOVED, data("test", "container2")));
+        cache.treeCacheEvent(event(path, CHILD_ADDED, data("test", "container2")));
 
         assertEquals(1, serviceMap.getServices("default").size());
     }
 
-    private static TreeCacheEvent event(String path, TreeCacheEvent.Type type, String data) {
-        TreeCacheEvent event = mock(TreeCacheEvent.class);
+    private static PathChildrenCacheEvent event(String path, PathChildrenCacheEvent.Type type, String data) {
+        PathChildrenCacheEvent event = mock(PathChildrenCacheEvent.class);
         ChildData childData = mock(ChildData.class);
         when(event.getData()).thenReturn(childData);
         when(childData.getPath()).thenReturn(path);
