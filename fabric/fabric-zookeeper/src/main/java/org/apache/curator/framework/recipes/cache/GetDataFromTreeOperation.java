@@ -13,7 +13,7 @@
  *  implied.  See the License for the specific language governing
  *  permissions and limitations under the License.
  */
-package org.apache.curator.framework.recipes.cache.rh;
+package org.apache.curator.framework.recipes.cache;
 
 class GetDataFromTreeOperation implements Operation
 {

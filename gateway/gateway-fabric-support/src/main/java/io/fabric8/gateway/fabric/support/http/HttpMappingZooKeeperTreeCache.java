@@ -30,11 +30,11 @@ import java.util.concurrent.atomic.AtomicBoolean;
 
 import org.apache.curator.framework.CuratorFramework;
 import org.apache.curator.framework.recipes.cache.ChildData;
+import org.apache.curator.framework.recipes.cache.PathChildrenCacheEvent;
+import org.apache.curator.framework.recipes.cache.PathChildrenCacheEvent.Type;
+import org.apache.curator.framework.recipes.cache.PathChildrenCacheListener;
 import org.apache.curator.framework.recipes.cache.TreeCache;
 import io.fabric8.api.gravia.IllegalStateAssertion;
-import org.apache.curator.framework.recipes.cache.TreeCacheEvent;
-import org.apache.curator.framework.recipes.cache.TreeCacheEvent.Type;
-import org.apache.curator.framework.recipes.cache.TreeCacheListener;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
@@ -56,9 +56,9 @@ public class HttpMappingZooKeeperTreeCache {
     private final AtomicBoolean active = new AtomicBoolean(false);
     private final ObjectMapper mapper = new ObjectMapper();
 
-    private final TreeCacheListener treeListener = new TreeCacheListener() {
+    private final PathChildrenCacheListener treeListener = new PathChildrenCacheListener() {
         @Override
-        public void childEvent(CuratorFramework curatorFramework, TreeCacheEvent event) throws Exception {
+        public void childEvent(CuratorFramework curatorFramework, PathChildrenCacheEvent event) throws Exception {
             treeCacheEvent(event);
         }
     };
@@ -87,11 +87,8 @@ public class HttpMappingZooKeeperTreeCache {
 
     public void init() throws Exception {
         if (active.compareAndSet(false, true)) {
-            treeCache = TreeCache.newBuilder(curator, zooKeeperPath)
-                    .setCacheData(true)
-                    .setDataIsCompressed(false)
-                    .setExecutor(treeCacheExecutor).build();
-            treeCache.start();
+            treeCache = new TreeCache(curator, zooKeeperPath, true, false, true, treeCacheExecutor);
+            treeCache.start(TreeCache.StartMode.NORMAL);
             treeCache.getListenable().addListener(treeListener);
             LOG.info("Started listening to ZK path " + zooKeeperPath);
         }
@@ -106,7 +103,7 @@ public class HttpMappingZooKeeperTreeCache {
         }
     }
 
-    protected void treeCacheEvent(TreeCacheEvent event) {
+    protected void treeCacheEvent(PathChildrenCacheEvent event) {
         String zkPath = zooKeeperPath;
         ChildData childData = event.getData();
         if (childData == null) {
@@ -127,10 +124,10 @@ public class HttpMappingZooKeeperTreeCache {
 
         boolean remove = false;
         switch (type) {
-            case NODE_ADDED:
-            case NODE_UPDATED:
+            case CHILD_ADDED:
+            case CHILD_UPDATED:
                 break;
-            case NODE_REMOVED:
+            case CHILD_REMOVED:
                 remove = true;
                 break;
             default:
@@ -163,7 +160,7 @@ public class HttpMappingZooKeeperTreeCache {
     protected void expandPropertyResolvers(ServiceDTO dto) throws URISyntaxException {
         List<String> services = dto.getServices();
         if( services == null ) {
-            services = Collections.emptyList();
+            services = Collections.EMPTY_LIST;
         }
         List<String> newList = new ArrayList<String>(services.size());
         for (String service : services) {

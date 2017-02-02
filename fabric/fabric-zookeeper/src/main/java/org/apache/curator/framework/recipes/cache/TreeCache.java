@@ -13,7 +13,7 @@
  *  implied.  See the License for the specific language governing
  *  permissions and limitations under the License.
  */
-package org.apache.curator.framework.recipes.cache.rh;
+package org.apache.curator.framework.recipes.cache;
 
 import com.google.common.annotations.VisibleForTesting;
 import com.google.common.base.Function;
@@ -29,10 +29,6 @@ import com.google.common.collect.Maps;
 import com.google.common.collect.Sets;
 import org.apache.curator.framework.CuratorFramework;
 import org.apache.curator.framework.listen.ListenerContainer;
-import org.apache.curator.framework.recipes.cache.ChildData;
-import org.apache.curator.framework.recipes.cache.PathChildrenCacheEvent;
-import org.apache.curator.framework.recipes.cache.PathChildrenCacheListener;
-import org.apache.curator.framework.recipes.cache.PathChildrenCacheMode;
 import org.apache.curator.framework.state.ConnectionState;
 import org.apache.curator.framework.state.ConnectionStateListener;
 import org.apache.curator.utils.EnsurePath;
@@ -492,7 +488,7 @@ public class TreeCache implements Closeable
         {
             if ( (ifVersion < 0) || (ifVersion == data.getStat().getVersion()) )
             {
-//                data.clearData();
+                data.clearData();
                 return true;
             }
         }
