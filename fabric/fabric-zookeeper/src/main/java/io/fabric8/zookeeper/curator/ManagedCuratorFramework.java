@@ -129,6 +129,8 @@ public final class ManagedCuratorFramework extends AbstractComponent implements 
                 // then stop it
                 LOGGER.info("GG: State.run(): curator = " + curator);
                 if (curator != null) {
+                    curator.getConnectionStateListenable().removeListener(this);
+                    curator.getUnhandledErrorListenable().removeListener(this);
                     curator.getZookeeperClient().stop();
                 }
                 try {
