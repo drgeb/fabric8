@@ -200,7 +200,7 @@ public class ServiceFactoryTest {
 
                 if (waitForInitalconnect) {
                     try {
-                        connected.await(15, TimeUnit.SECONDS);
+                        connected.await(25, TimeUnit.SECONDS);
                     } catch (InterruptedException e) {
                         e.printStackTrace();
                     }
@@ -246,7 +246,7 @@ public class ServiceFactoryTest {
 
         LOG.info("Zk close all done!");
 
-        assertTrue("was connected", connected.await(15, TimeUnit.SECONDS));
+        assertTrue("was connected", connected.await(25, TimeUnit.SECONDS));
 
         for (int i = 0; i < 30; i++) {
             LOG.info("Checking for connection...");
